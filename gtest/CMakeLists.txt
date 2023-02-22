@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21.2)
 
-project(TestLibLL)
+project(TestLibTFminiPlus)
 
 set(CMAKE_CXX_STANDARD 11)
 
@@ -14,7 +14,7 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)  
 
 include_directories(../Inc)
-add_library(Tamplate STATIC ../Src/tamplate.c)
+add_library(Tamplate STATIC ../Src/TFminiPlus.c)
 
 enable_testing()
 add_executable(
