@@ -1,22 +1,14 @@
-Linked List Library
+TFminiPlus Library
 ============
-## Status:
 
 ## Brief:
 
-[Documentation]()
-
-## Contents:
-* [Content 1]()
-* [Content 2]()
-* [Content 3]()
-* [Content 4]()
-* [Content 5]()
-* [Content 6]()
-
-## Terms and definitions:
+Library for TFmini Plus lidar.
 
 ## Description:
+
+Parsing an output data form TFmini Plus
+
 
 ## How to build tests.
 For tests [googletest framework](https://github.com/google/googletest) uses. 	
@@ -44,11 +36,10 @@ or
 
 1) Add this repository to your project as a submodule.
 2) Add \*.c files to your compiler.
-3) Add "include" directories (\*.h files). 
+3) Add "include" directories (\*.h files).
+4) ...
 
+## References
 
-
-
-
-
+1) [SJ-PM-TFmini Plus A05 Product Manual]()
 
