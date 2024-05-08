@@ -41,5 +41,5 @@ or
 
 ## References
 
-1) [SJ-PM-TFmini Plus A05 Product Manual]()
+1) [SJ-PM-TFmini Plus A05 Product Manual](https://github.com/TFmini/TFmini-Plus)
 
