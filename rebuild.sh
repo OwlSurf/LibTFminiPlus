@@ -1,7 +1,4 @@
-/bin/bash
-
-cd gtest/build;
-make clean;
-make;
-cd ../../;
-
+#!/bin/bash
+set -euo pipefail
+cmake --build gtest/build
+ctest --test-dir gtest/build --output-on-failure

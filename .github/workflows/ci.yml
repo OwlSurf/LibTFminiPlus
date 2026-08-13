@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S gtest -B gtest/build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build gtest/build
+
+      - name: Test
+        run: ctest --test-dir gtest/build --output-on-failure
