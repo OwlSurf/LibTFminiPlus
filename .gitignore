@@ -53,3 +53,5 @@ dkms.conf
 
 # Test build
 gtest/build
+build/
+build-lib/
