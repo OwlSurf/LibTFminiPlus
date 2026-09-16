@@ -26,6 +26,14 @@ static uint16_t read_u16_le(const uint8_t *p)
 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
+static void write_u32_le(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v & 0xFFu);
+	p[1] = (uint8_t)((v >> 8) & 0xFFu);
+	p[2] = (uint8_t)((v >> 16) & 0xFFu);
+	p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
 static int16_t temp_raw_to_c(uint16_t raw)
 {
 	/* Product manual: Temp(°C) = Temp_raw / 8 - 256 */
@@ -34,41 +42,52 @@ static int16_t temp_raw_to_c(uint16_t raw)
 
 static void ring_reset(tfmini_plus_t *ctx)
 {
-	ctx->head = 0;
-	ctx->tail = 0;
-	ctx->count = 0;
+	ctx->_.head = 0;
+	ctx->_.tail = 0;
+	ctx->_.count = 0;
 }
 
 static size_t ring_free(const tfmini_plus_t *ctx)
 {
-	return TFMINI_RX_BUFFER_SIZE - ctx->count;
+	return TFMINI_RX_BUFFER_SIZE - ctx->_.count;
 }
 
 static bool ring_push(tfmini_plus_t *ctx, const uint8_t *data, size_t len)
 {
+	size_t first;
+
 	if (len > ring_free(ctx)) {
 		return false;
 	}
-	for (size_t i = 0; i < len; i++) {
-		ctx->rx[ctx->tail] = data[i];
-		ctx->tail = (ctx->tail + 1u) % TFMINI_RX_BUFFER_SIZE;
+	if (len == 0) {
+		return true;
 	}
-	ctx->count += len;
+
+	first = TFMINI_RX_BUFFER_SIZE - ctx->_.tail;
+	if (first > len) {
+		first = len;
+	}
+	memcpy(&ctx->_.rx[ctx->_.tail], data, first);
+	if (len > first) {
+		memcpy(&ctx->_.rx[0], data + first, len - first);
+	}
+	ctx->_.tail = (ctx->_.tail + len) % TFMINI_RX_BUFFER_SIZE;
+	ctx->_.count += len;
 	return true;
 }
 
 static uint8_t ring_at(const tfmini_plus_t *ctx, size_t offset)
 {
-	return ctx->rx[(ctx->head + offset) % TFMINI_RX_BUFFER_SIZE];
+	return ctx->_.rx[(ctx->_.head + offset) % TFMINI_RX_BUFFER_SIZE];
 }
 
 static void ring_discard(tfmini_plus_t *ctx, size_t n)
 {
-	if (n > ctx->count) {
-		n = ctx->count;
+	if (n > ctx->_.count) {
+		n = ctx->_.count;
 	}
-	ctx->head = (ctx->head + n) % TFMINI_RX_BUFFER_SIZE;
-	ctx->count -= n;
+	ctx->_.head = (ctx->_.head + n) % TFMINI_RX_BUFFER_SIZE;
+	ctx->_.count -= n;
 }
 
 static void ring_copy_frame(const tfmini_plus_t *ctx, uint8_t out[TFMINI_FRAME_LEN])
@@ -84,7 +103,7 @@ static void ring_copy_frame(const tfmini_plus_t *ctx, uint8_t out[TFMINI_FRAME_L
  */
 static bool sync_to_header(tfmini_plus_t *ctx)
 {
-	while (ctx->count >= 2u) {
+	while (ctx->_.count >= 2u) {
 		if (ring_at(ctx, 0) == TFMINI_HEADER_BYTE &&
 		    ring_at(ctx, 1) == TFMINI_HEADER_BYTE) {
 			return true;
@@ -103,7 +122,7 @@ static bool try_parse_one_frame(tfmini_plus_t *ctx, bool *checksum_failed)
 	if (!sync_to_header(ctx)) {
 		return false;
 	}
-	if (ctx->count < TFMINI_FRAME_LEN) {
+	if (ctx->_.count < TFMINI_FRAME_LEN) {
 		return false;
 	}
 
@@ -111,18 +130,47 @@ static bool try_parse_one_frame(tfmini_plus_t *ctx, bool *checksum_failed)
 
 	if (frame_checksum(frame) != frame[8]) {
 		*checksum_failed = true;
+		ctx->frames_bad_checksum++;
 		/* Skip first header byte and resync on next opportunity. */
 		ring_discard(ctx, 1);
 		return false;
 	}
 
-	ctx->distance_cm = read_u16_le(&frame[2]);
+	ctx->distance = read_u16_le(&frame[2]);
 	ctx->strength = read_u16_le(&frame[4]);
 	ctx->temperature_c = temp_raw_to_c(read_u16_le(&frame[6]));
 	ctx->has_data = true;
+	ctx->frames_ok++;
 
 	ring_discard(ctx, TFMINI_FRAME_LEN);
 	return true;
+}
+
+static tfmini_status_t parse_available(tfmini_plus_t *ctx)
+{
+	bool saw_ok = false;
+	bool saw_bad_cs = false;
+
+	for (;;) {
+		bool checksum_failed = false;
+		if (try_parse_one_frame(ctx, &checksum_failed)) {
+			saw_ok = true;
+			continue;
+		}
+		if (checksum_failed) {
+			saw_bad_cs = true;
+			continue;
+		}
+		break;
+	}
+
+	if (saw_ok) {
+		return TFMINI_OK;
+	}
+	if (saw_bad_cs) {
+		return TFMINI_BAD_CHECKSUM;
+	}
+	return TFMINI_NEED_MORE;
 }
 
 void tfmini_plus_init(tfmini_plus_t *ctx)
@@ -135,38 +183,71 @@ void tfmini_plus_init(tfmini_plus_t *ctx)
 
 tfmini_status_t tfmini_plus_feed(tfmini_plus_t *ctx, const uint8_t *data, size_t len)
 {
-	bool saw_ok = false;
-	bool saw_bad_cs = false;
+	bool overflowed = false;
+	tfmini_status_t st;
 
-	if (ctx == NULL || data == NULL || len == 0) {
+	if (ctx == NULL || data == NULL) {
 		return TFMINI_INVALID_ARG;
+	}
+	if (len == 0) {
+		return TFMINI_NEED_MORE;
 	}
 
 	if (!ring_push(ctx, data, len)) {
+		ctx->overflows++;
+		overflowed = true;
 		ring_reset(ctx);
+		if (len > TFMINI_RX_BUFFER_SIZE || !ring_push(ctx, data, len)) {
+			ring_reset(ctx);
+			return TFMINI_OVERFLOW;
+		}
+	}
+
+	st = parse_available(ctx);
+	if (overflowed) {
 		return TFMINI_OVERFLOW;
 	}
+	return st;
+}
 
-	for (;;) {
-		bool checksum_failed = false;
-		if (try_parse_one_frame(ctx, &checksum_failed)) {
-			saw_ok = true;
-			continue;
-		}
-		if (checksum_failed) {
-			saw_bad_cs = true;
-			continue; /* keep trying to resync / parse next */
-		}
-		break;
+bool tfmini_plus_distance_valid(const tfmini_plus_t *ctx)
+{
+	if (ctx == NULL || !ctx->has_data) {
+		return false;
 	}
+	return ctx->distance != 0u && ctx->distance != TFMINI_DIST_INVALID;
+}
 
-	if (saw_ok) {
-		return TFMINI_OK;
+bool tfmini_plus_strength_valid(const tfmini_plus_t *ctx)
+{
+	if (ctx == NULL || !ctx->has_data) {
+		return false;
 	}
-	if (saw_bad_cs) {
-		return TFMINI_BAD_CHECKSUM;
+	return ctx->strength >= TFMINI_STRENGTH_MIN &&
+	       ctx->strength <= TFMINI_STRENGTH_MAX;
+}
+
+bool tfmini_plus_measurement_valid(const tfmini_plus_t *ctx)
+{
+	return tfmini_plus_distance_valid(ctx) && tfmini_plus_strength_valid(ctx);
+}
+
+const char *tfmini_status_str(tfmini_status_t status)
+{
+	switch (status) {
+	case TFMINI_OK:
+		return "OK";
+	case TFMINI_NEED_MORE:
+		return "NEED_MORE";
+	case TFMINI_BAD_CHECKSUM:
+		return "BAD_CHECKSUM";
+	case TFMINI_OVERFLOW:
+		return "OVERFLOW";
+	case TFMINI_INVALID_ARG:
+		return "INVALID_ARG";
+	default:
+		return "UNKNOWN";
 	}
-	return TFMINI_NEED_MORE;
 }
 
 /* ---- Configuration command builders ---- */
@@ -209,11 +290,47 @@ size_t tfmini_cmd_system_reset(uint8_t *out, size_t out_cap)
 
 size_t tfmini_cmd_set_frame_rate(uint8_t *out, size_t out_cap, uint16_t hz)
 {
-	uint8_t p[] = {
-		TFMINI_CMD_HEADER, 0x06, 0x03,
-		(uint8_t)(hz & 0xFFu),
-		(uint8_t)((hz >> 8) & 0xFFu)
-	};
+	uint8_t p[5];
+
+	if (hz < TFMINI_FRAME_RATE_MIN || hz > TFMINI_FRAME_RATE_MAX) {
+		return 0;
+	}
+
+	p[0] = TFMINI_CMD_HEADER;
+	p[1] = 0x06;
+	p[2] = 0x03;
+	p[3] = (uint8_t)(hz & 0xFFu);
+	p[4] = (uint8_t)((hz >> 8) & 0xFFu);
+	return cmd_write(out, out_cap, p, sizeof(p));
+}
+
+size_t tfmini_cmd_set_baud_rate(uint8_t *out, size_t out_cap, tfmini_baud_t baud)
+{
+	uint8_t p[7];
+
+	switch (baud) {
+	case TFMINI_BAUD_9600:
+	case TFMINI_BAUD_14400:
+	case TFMINI_BAUD_19200:
+	case TFMINI_BAUD_38400:
+	case TFMINI_BAUD_56000:
+	case TFMINI_BAUD_57600:
+	case TFMINI_BAUD_115200:
+	case TFMINI_BAUD_128000:
+	case TFMINI_BAUD_230400:
+	case TFMINI_BAUD_256000:
+	case TFMINI_BAUD_460800:
+	case TFMINI_BAUD_500000:
+	case TFMINI_BAUD_512000:
+		break;
+	default:
+		return 0;
+	}
+
+	p[0] = TFMINI_CMD_HEADER;
+	p[1] = 0x08;
+	p[2] = 0x06;
+	write_u32_le(&p[3], (uint32_t)baud);
 	return cmd_write(out, out_cap, p, sizeof(p));
 }
 
