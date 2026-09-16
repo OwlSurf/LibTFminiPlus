@@ -5,10 +5,19 @@ project(TestLibTFminiPlus)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_C_STANDARD 99)
 
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+	add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+	add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
 include(FetchContent)
+cmake_policy(SET CMP0135 NEW)
 FetchContent_Declare(
 	googletest
 	URL https://github.com/google/googletest/archive/609281088cfefc76f9d0ce82e1ff6c30cc3591e5.zip
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
